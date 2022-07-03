@@ -12,17 +12,18 @@
 //! font.draw_text_mut(&mut image, Rgb([255, 0, 0]), 0, 0, FontStyle::REGULAR, "Hello, world");
 //! ```
 use crate::error::FontError;
+use crate::hb_wrapper::{feature_from_tag, HBBuffer, HBFont};
+use anyhow::Result;
 use conv::ValueInto;
-use euclid::default::{Point2D, Rect, Size2D};
 use font_kit::canvas::{Canvas, Format, RasterizationOptions};
 use font_kit::font::Font;
 use font_kit::hinting::HintingOptions;
-use font_kit::loader::FontTransform;
 use font_kit::properties::{Properties, Style, Weight};
 use font_kit::source::SystemSource;
 use image::{GenericImage, Pixel};
 use imageproc::definitions::Clamp;
 use imageproc::pixelops::weighted_sum;
+use pathfinder_geometry::transform2d::Transform2F;
 use std::collections::HashMap;
 use std::sync::Arc;
 use syntect::highlighting;
@@ -52,6 +53,8 @@ impl From<highlighting::FontStyle> for FontStyle {
     }
 }
 
+use pathfinder_geometry::rect::RectI;
+use pathfinder_geometry::vector::Vector2I;
 use FontStyle::*;
 
 /// A single font with specific size
@@ -96,8 +99,10 @@ impl ImageFont {
     pub fn new(name: &str, size: f32) -> Result<Self, FontError> {
         // Silicon already contains Hack font
         if name == "Hack" {
-            let mut font = Self::default();
-            font.size = size;
+            let font = ImageFont {
+                size,
+                ..Default::default()
+            };
             return Ok(font);
         }
 
@@ -122,6 +127,8 @@ impl ImageFont {
                         fonts.insert(REGULAR, font);
                     } else if properties.weight == Weight::BOLD {
                         fonts.insert(BOLD, font);
+                    } else if properties.weight == Weight::MEDIUM && !fonts.contains_key(&REGULAR) {
+                        fonts.insert(REGULAR, font);
                     }
                 }
                 Style::Italic => {
@@ -129,6 +136,8 @@ impl ImageFont {
                         fonts.insert(ITALIC, font);
                     } else if properties.weight == Weight::BOLD {
                         fonts.insert(BOLDITALIC, font);
+                    } else if properties.weight == Weight::MEDIUM && !fonts.contains_key(&ITALIC) {
+                        fonts.insert(ITALIC, font);
                     }
                 }
                 _ => (),
@@ -184,17 +193,6 @@ impl FontCollection {
         Ok(Self(fonts))
     }
 
-    fn glyph_for_char(&self, c: char, style: FontStyle) -> Option<(u32, &ImageFont, &Font)> {
-        for font in &self.0 {
-            let result = font.get_by_style(style);
-            if let Some(id) = result.glyph_for_char(c) {
-                return Some((id, font, result));
-            }
-        }
-        eprintln!("[warning] No font found for character `{}`", c);
-        None
-    }
-
     /// get max height of all the fonts
     pub fn get_font_height(&self) -> u32 {
         self.0
@@ -204,36 +202,57 @@ impl FontCollection {
             .unwrap()
     }
 
+    fn shape_text(&self, font: &mut HBFont, text: &str) -> Result<Vec<u32>> {
+        // feature tags
+        let features = vec![
+            feature_from_tag("kern")?,
+            feature_from_tag("clig")?,
+            feature_from_tag("liga")?,
+        ];
+        let mut buf = HBBuffer::new()?;
+        buf.add_str(text);
+        buf.guess_segments_properties();
+        font.shape(&buf, features.as_slice());
+        let hb_infos = buf.get_glyph_infos();
+        let mut glyph_ids = Vec::new();
+        for info in hb_infos.iter() {
+            glyph_ids.push(info.codepoint);
+        }
+        Ok(glyph_ids)
+    }
+
     fn layout(&self, text: &str, style: FontStyle) -> (Vec<PositionedGlyph>, u32) {
         let mut delta_x = 0;
         let height = self.get_font_height();
 
-        let glyphs = text
-            .chars()
-            .filter_map(|c| {
-                self.glyph_for_char(c, style).map(|(id, imfont, font)| {
-                    let raster_rect = font
-                        .raster_bounds(
-                            id,
-                            imfont.size,
-                            &FontTransform::identity(),
-                            &Point2D::zero(),
-                            HintingOptions::None,
-                            RasterizationOptions::GrayscaleAa,
-                        )
-                        .unwrap();
-                    let x = delta_x as i32 + raster_rect.origin.x;
-                    let y = height as i32 - raster_rect.size.height - raster_rect.origin.y;
-                    delta_x += Self::get_glyph_width(font, id, imfont.size);
+        let imfont = self.0.get(0).unwrap();
+        let font = imfont.get_by_style(style);
+        let mut hb_font = HBFont::new(font);
+        // apply font features especially ligature with a shape engine
+        let shaped_glyphs = self.shape_text(&mut hb_font, text).unwrap();
 
-                    PositionedGlyph {
-                        id,
-                        font: font.clone(),
-                        size: imfont.size,
-                        raster_rect,
-                        position: Point2D::new(x, y),
-                    }
-                })
+        let glyphs = shaped_glyphs
+            .iter()
+            .map(|id| {
+                let raster_rect = font
+                    .raster_bounds(
+                        *id,
+                        imfont.size,
+                        Transform2F::default(),
+                        HintingOptions::None,
+                        RasterizationOptions::GrayscaleAa,
+                    )
+                    .unwrap();
+                let position = Vector2I::new(delta_x as i32, height as i32) + raster_rect.origin();
+                delta_x += Self::get_glyph_width(font, *id, imfont.size);
+
+                PositionedGlyph {
+                    id: *id,
+                    font: font.clone(),
+                    size: imfont.size,
+                    raster_rect,
+                    position,
+                }
             })
             .collect();
 
@@ -244,7 +263,7 @@ impl FontCollection {
     fn get_glyph_width(font: &Font, id: u32, size: f32) -> u32 {
         let metrics = font.metrics();
         let advance = font.advance(id).unwrap();
-        (advance / metrics.units_per_em as f32 * size).x.ceil() as u32
+        (advance / metrics.units_per_em as f32 * size).x().ceil() as u32
     }
 
     /// Get the width of the given text
@@ -293,44 +312,37 @@ struct PositionedGlyph {
     id: u32,
     font: Font,
     size: f32,
-    position: Point2D<i32>,
-    raster_rect: Rect<i32>,
+    position: Vector2I,
+    raster_rect: RectI,
 }
 
 impl PositionedGlyph {
     fn draw<O: FnMut(i32, i32, f32)>(&self, offset: i32, mut o: O) {
-        let mut canvas = Canvas::new(&self.raster_rect.size.to_u32(), Format::A8);
-
-        let origin = Point2D::new(
-            -self.raster_rect.origin.x,
-            self.raster_rect.size.height + self.raster_rect.origin.y,
-        )
-        .to_f32();
+        let mut canvas = Canvas::new(self.raster_rect.size(), Format::A8);
 
         // don't rasterize whitespace(https://github.com/pcwalton/font-kit/issues/7)
-        if canvas.size != Size2D::new(0, 0) {
+        if canvas.size != Vector2I::new(0, 0) {
             self.font
                 .rasterize_glyph(
                     &mut canvas,
                     self.id,
                     self.size,
-                    &FontTransform::identity(),
-                    &origin,
+                    Transform2F::from_translation(-self.raster_rect.origin().to_f32()),
                     HintingOptions::None,
                     RasterizationOptions::GrayscaleAa,
                 )
                 .unwrap();
         }
 
-        for y in (0..self.raster_rect.size.height).rev() {
+        for y in (0..self.raster_rect.height()).rev() {
             let (row_start, row_end) =
                 (y as usize * canvas.stride, (y + 1) as usize * canvas.stride);
             let row = &canvas.pixels[row_start..row_end];
 
-            for x in 0..self.raster_rect.size.width {
+            for x in 0..self.raster_rect.width() {
                 let val = f32::from(row[x as usize]) / 255.0;
-                let px = self.position.x + x;
-                let py = self.position.y + y + offset;
+                let px = self.position.x() + x;
+                let py = self.position.y() + y + offset;
 
                 o(px, py, val);
             }

@@ -2,8 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/silicon.svg)](https://crates.io/crates/silicon)
 [![Documentation](https://docs.rs/silicon/badge.svg)](https://docs.rs/silicon)
-[![Linux Build Status](https://travis-ci.org/Aloxaf/silicon.svg?branch=master)](https://travis-ci.org/Aloxaf/silicon)
-[![Windows build status](https://ci.appveyor.com/api/projects/status/github/Aloxaf/silicon?svg=true)](https://ci.appveyor.com/project/Aloxaf/silicon)
+[![CI](https://github.com/Aloxaf/silicon/workflows/CI/badge.svg)](https://github.com/Aloxaf/silicon/actions?query=workflow%3ACI)
 ![License](https://img.shields.io/crates/l/silicon.svg)
 
 Silicon is an alternative to [Carbon](https://github.com/dawnlabs/carbon) implemented in Rust.
@@ -20,7 +19,7 @@ But it is a web application, which brings the following disadvantages:
  - Cannot work without Internet & browser.
  - Doesn't work well with shell. (Although there is _carbon-now-cli_, its experience is not very good, especially when the network is not so good.)
 
-However, Silicon doesn't have these problem.
+However, Silicon doesn't have these problems.
 It's is implemented in Rust and can work without browser & Internet.
 
 Silicon can render your source code on the fly while _carbon-now-cli_ takes several seconds on it.
@@ -35,16 +34,6 @@ It's not as beautiful as Carbon...
 
 ```bash
 cargo install silicon
-
-# or the latest version (Linux/macOS)
-
-cargo install --git https://github.com/Aloxaf/silicon
-
-# for Windows (see #11)
-
-git clone --single-branch --branch dev https://github.com/Aloxaf/silicon
-cd silicon
-cargo build --release
 ```
 
 ### AUR
@@ -58,7 +47,27 @@ eg.
 pikaur -S silicon
 ```
 
+### Homebrew
+
+You can install Silicon using [Homebrew](https://brew.sh):
+
+```bash
+brew install silicon
+```
+
 ## Dependencies
+
+### Ubuntu
+```bash
+sudo apt install expat
+sudo apt install libxml2-dev
+sudo apt install pkg-config libasound2-dev libssl-dev cmake libfreetype6-dev libexpat1-dev libxcb-composite0-dev
+```
+
+### Fedora
+```bash
+sudo dnf install cmake expat-devel libxcb-devel freetype-devel libxml2-devel
+```
 
 ### Arch Linux
 
@@ -74,16 +83,20 @@ Read code from file
 silicon main.rs -o main.png 
 ```
 
-Read code from clipboard, and copy the result image to clipboard(`--to-clipboard` is only available on Linux)
+Read code from clipboard, and copy the result image to clipboard
 
 ```bash
 silicon --from-clipboard -l rs --to-clipboard
 ```
 
-Use multiple fonts
+Specify a fallback font list and their size
 
 ```bash
-silicon main.rs -o main.png -f 'Hack; SimSun'
+silicon -o main.png -l bash -f 'Hack; SimSun=31; code2000' <<EOF
+echo Hello
+echo 你好
+echo ∠( ᐛ 」∠)＿
+EOF
 ```
 
 Highlight specified line
@@ -109,3 +122,27 @@ silicon ./target/test.rs -o test.png --background '#fff0'
 ```
 
 see `silicon --help` for detail
+
+## Adding new syntaxes / themes
+
+Silicon reads syntax-definition and theme cache from bat's cache directory. 
+
+You can find the steps to add new syntaxes / themes for bat here: [sharkdp/bat#adding-new-syntaxes--language-definitions](https://github.com/sharkdp/bat#adding-new-syntaxes--language-definitions).
+
+## Configuration file
+
+You can write some common args to `silicon --config-file`.
+
+Example:
+```shell
+# enable shadow
+--shadow-color '#555'
+--background '#fff'
+--shadow-blur-radius 30
+--no-window-controls
+```
+
+# Related projects
+
+- [vim-silicon](https://github.com/segeljakt/vim-silicon)
+- [silicon.el](https://github.com/iensu/silicon-el)

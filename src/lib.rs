@@ -35,7 +35,9 @@
 extern crate log;
 
 pub mod blur;
+pub mod directories;
 pub mod error;
 pub mod font;
 pub mod formatter;
+pub mod hb_wrapper;
 pub mod utils;

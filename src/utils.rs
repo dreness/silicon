@@ -1,19 +1,38 @@
+use crate::directories::PROJECT_DIRS;
 use crate::error::ParseColorError;
-use image::imageops::{crop, resize};
+use image::imageops::{crop, resize, FilterType};
 use image::Pixel;
-use image::{DynamicImage, FilterType, GenericImage, GenericImageView, Rgba, RgbaImage};
+use image::{DynamicImage, GenericImage, GenericImageView, Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_rect_mut, draw_line_segment_mut};
 use imageproc::rect::Rect;
 use syntect::dumps;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 
+pub fn read_from_bat_cache() -> Option<(SyntaxSet, ThemeSet)> {
+    let cache_dir = PROJECT_DIRS.cache_dir();
+    let syntax_cache = cache_dir.join("syntaxes.bin");
+    let theme_cache = cache_dir.join("themes.bin");
+    if syntax_cache.exists() && theme_cache.exists() {
+        if let (Ok(a), Ok(b)) = (
+            dumps::from_dump_file(syntax_cache),
+            dumps::from_dump_file(theme_cache),
+        ) {
+            return Some((a, b));
+        }
+    }
+    None
+}
+
 /// Load the default SyntaxSet and ThemeSet.
 pub fn init_syntect() -> (SyntaxSet, ThemeSet) {
-    (
-        dumps::from_binary(include_bytes!("../assets/syntaxes.bin")),
-        dumps::from_binary(include_bytes!("../assets/themes.bin")),
-    )
+    // try to use bat's cache
+    read_from_bat_cache().unwrap_or_else(|| {
+        (
+            dumps::from_binary(include_bytes!("../assets/syntaxes.bin")),
+            dumps::from_binary(include_bytes!("../assets/themes.bin")),
+        )
+    })
 }
 
 pub trait ToRgba {
@@ -86,7 +105,7 @@ pub(crate) fn add_window_controls(image: &mut DynamicImage) {
     ];
 
     let mut background = image.get_pixel(37, 37);
-    background.data[3] = 0;
+    background.0[3] = 0;
 
     let mut title_bar = RgbaImage::from_pixel(120 * 3, 40 * 3, background);
 
@@ -111,10 +130,31 @@ pub(crate) fn add_window_controls(image: &mut DynamicImage) {
     copy_alpha(&title_bar, image.as_mut_rgba8().unwrap(), 15, 15);
 }
 
+#[derive(Clone, Debug)]
+pub enum Background {
+    Solid(Rgba<u8>),
+    Image(RgbaImage),
+}
+
+impl Default for Background {
+    fn default() -> Self {
+        Self::Solid("#abb8c3".to_rgba().unwrap())
+    }
+}
+
+impl Background {
+    fn to_image(&self, width: u32, height: u32) -> RgbaImage {
+        match self {
+            Background::Solid(color) => RgbaImage::from_pixel(width, height, color.to_owned()),
+            Background::Image(image) => resize(image, width, height, FilterType::Triangle),
+        }
+    }
+}
+
 /// Add the shadow for image
 #[derive(Debug)]
 pub struct ShadowAdder {
-    background: Rgba<u8>,
+    background: Background,
     shadow_color: Rgba<u8>,
     blur_radius: f32,
     pad_horiz: u32,
@@ -126,7 +166,7 @@ pub struct ShadowAdder {
 impl ShadowAdder {
     pub fn new() -> Self {
         Self {
-            background: "#abb8c3".to_rgba().unwrap(),
+            background: Background::default(),
             shadow_color: "#707070".to_rgba().unwrap(),
             blur_radius: 50.0,
             pad_horiz: 80,
@@ -137,8 +177,8 @@ impl ShadowAdder {
     }
 
     /// Set the background color
-    pub fn background(mut self, color: Rgba<u8>) -> Self {
-        self.background = color;
+    pub fn background(mut self, bg: Background) -> Self {
+        self.background = bg;
         self
     }
 
@@ -180,8 +220,7 @@ impl ShadowAdder {
         let height = image.height() + self.pad_vert * 2;
 
         // create the shadow
-        let mut shadow = RgbaImage::from_pixel(width, height, self.background);
-
+        let mut shadow = self.background.to_image(width, height);
         if self.blur_radius > 0.0 {
             let rect = Rect::at(
                 self.pad_horiz as i32 + self.offset_x,
@@ -220,10 +259,12 @@ pub(crate) fn copy_alpha(src: &RgbaImage, dst: &mut RgbaImage, x: u32, y: u32) {
     assert!(src.height() + y <= dst.height());
     for j in 0..src.height() {
         for i in 0..src.width() {
+            // NOTE: Undeprecate in https://github.com/image-rs/image/pull/1008
+            #[allow(deprecated)]
             unsafe {
                 let s = src.unsafe_get_pixel(i, j);
                 let mut d = dst.unsafe_get_pixel(i + x, j + y);
-                match s.data[3] {
+                match s.0[3] {
                     255 => d = s,
                     0 => (/* do nothing */),
                     _ => d.blend(&s),
@@ -255,16 +296,18 @@ pub(crate) fn round_corner(image: &mut DynamicImage, radius: u32) {
     );
 
     let part = crop(&mut circle, 0, 0, radius, radius);
-    image.copy_from(&part, 0, 0);
+    image.copy_from(&part, 0, 0).unwrap();
 
     let part = crop(&mut circle, radius + 1, 0, radius, radius);
-    image.copy_from(&part, width - radius, 0);
+    image.copy_from(&part, width - radius, 0).unwrap();
 
     let part = crop(&mut circle, 0, radius + 1, radius, radius);
-    image.copy_from(&part, 0, height - radius);
+    image.copy_from(&part, 0, height - radius).unwrap();
 
     let part = crop(&mut circle, radius + 1, radius + 1, radius, radius);
-    image.copy_from(&part, width - radius, height - radius);
+    image
+        .copy_from(&part, width - radius, height - radius)
+        .unwrap();
 }
 
 // `draw_filled_circle_mut` doesn't work well with small radius in imageproc v0.18.0

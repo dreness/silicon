@@ -36,6 +36,8 @@ pub struct ImageFormatter {
     shadow_adder: Option<ShadowAdder>,
     /// Tab width
     tab_width: u8,
+    /// Line Offset
+    line_offset: u32,
 }
 
 #[derive(Default)]
@@ -56,6 +58,8 @@ pub struct ImageFormatterBuilder<S> {
     shadow_adder: Option<ShadowAdder>,
     /// Tab width
     tab_width: u8,
+    /// Line Offset
+    line_offset: u32,
 }
 
 // FIXME: cannot use `ImageFormatterBuilder::new().build()` bacuse cannot infer type for `S`
@@ -74,6 +78,12 @@ impl<S: AsRef<str> + Default> ImageFormatterBuilder<S> {
     /// Whether show the line number
     pub fn line_number(mut self, show: bool) -> Self {
         self.line_number = show;
+        self
+    }
+
+    /// Set Line offset
+    pub fn line_offset(mut self, offset: u32) -> Self {
+        self.line_offset = offset;
         self
     }
 
@@ -140,6 +150,7 @@ impl<S: AsRef<str> + Default> ImageFormatterBuilder<S> {
             tab_width: self.tab_width,
             code_pad_top,
             font,
+            line_offset: self.line_offset,
         })
     }
 }
@@ -223,11 +234,15 @@ impl ImageFormatter {
     }
 
     fn draw_line_number(&self, image: &mut DynamicImage, lineno: u32, mut color: Rgba<u8>) {
-        for i in color.data.iter_mut() {
+        for i in color.0.iter_mut() {
             *i = (*i).saturating_sub(20);
         }
         for i in 0..=lineno {
-            let line_mumber = format!("{:>width$}", i + 1, width = self.line_number_chars as usize);
+            let line_mumber = format!(
+                "{:>width$}",
+                i + self.line_offset,
+                width = self.line_number_chars as usize
+            );
             self.font.draw_text_mut(
                 image,
                 color,
@@ -239,27 +254,28 @@ impl ImageFormatter {
         }
     }
 
-    fn highlight_lines(&self, image: &mut DynamicImage, lines: &[u32]) {
+    fn highlight_lines<I: IntoIterator<Item = u32>>(&self, image: &mut DynamicImage, lines: I) {
         let width = image.width();
         let height = self.font.get_font_height() + self.line_pad;
         let mut color = image.get_pixel(20, 20);
 
-        for i in color.data.iter_mut() {
+        for i in color.0.iter_mut() {
             *i = (*i).saturating_add(40);
         }
 
         let shadow = RgbaImage::from_pixel(width, height, color);
 
         for i in lines {
-            let y = self.get_line_y(*i - 1);
+            let y = self.get_line_y(i - 1);
             copy_alpha(&shadow, image.as_mut_rgba8().unwrap(), 0, y);
         }
     }
 
-    // TODO: &mut ?
+    // TODO: use &T instead of &mut T ?
     pub fn format(&mut self, v: &[Vec<(Style, &str)>], theme: &Theme) -> DynamicImage {
         if self.line_number {
-            self.line_number_chars = ((v.len() as f32).log10() + 1.0).floor() as u32;
+            self.line_number_chars =
+                (((v.len() + self.line_offset as usize) as f32).log10() + 1.0).floor() as u32;
         } else {
             self.line_number_chars = 0;
             self.line_number_pad = 0;
@@ -278,7 +294,12 @@ impl ImageFormatter {
         let mut image = DynamicImage::ImageRgba8(RgbaImage::from_pixel(size.0, size.1, background));
 
         if !self.highlight_lines.is_empty() {
-            self.highlight_lines(&mut image, &self.highlight_lines);
+            let highlight_lines = self
+                .highlight_lines
+                .iter()
+                .cloned()
+                .filter(|&n| n >= 1 && n <= drawables.max_lineno + 1);
+            self.highlight_lines(&mut image, highlight_lines);
         }
         if self.line_number {
             self.draw_line_number(&mut image, drawables.max_lineno, foreground);
