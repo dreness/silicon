@@ -30,7 +30,7 @@ pub fn get_args_from_config_file() -> Vec<OsString> {
                 .split('\n')
                 .map(|line| line.trim())
                 .filter(|line| !line.starts_with('#') && !line.is_empty())
-                .map(|line| shell_words::split(line))
+                .map(shell_words::split)
                 .collect::<Result<Vec<_>, _>>()
                 .ok()
         })
@@ -39,8 +39,8 @@ pub fn get_args_from_config_file() -> Vec<OsString> {
 }
 
 fn parse_str_color(s: &str) -> Result<Rgba<u8>, Error> {
-    Ok(s.to_rgba()
-        .map_err(|_| format_err!("Invalid color: `{}`", s))?)
+    s.to_rgba()
+        .map_err(|_| format_err!("Invalid color: `{}`", s))
 }
 
 fn parse_font_str(s: &str) -> Vec<(String, f32)> {
@@ -142,13 +142,17 @@ pub struct Config {
         short,
         long,
         value_name = "PATH",
-        required_unless_one = &["config-file", "list-fonts", "list-themes", "to-clipboard"]
+        required_unless_one = &["config-file", "list-fonts", "list-themes", "to-clipboard", "build-cache"]
     )]
     pub output: Option<PathBuf>,
 
     /// Hide the window controls.
     #[structopt(long)]
     pub no_window_controls: bool,
+
+    /// Show window title
+    #[structopt(long, value_name = "WINDOW_TITLE")]
+    pub window_title: Option<String>,
 
     /// Hide the line number.
     #[structopt(long)]
@@ -195,12 +199,15 @@ pub struct Config {
     #[structopt(long, value_name = "THEME", default_value = "Dracula")]
     pub theme: String,
 
-    // Copy the output image to clipboard.
+    /// Copy the output image to clipboard.
     #[structopt(short = "c", long)]
     pub to_clipboard: bool,
     // Draw a custom text on the bottom right corner
     // #[structopt(long)]
     // watermark: Option<String>,
+    /// build syntax definition and theme cache
+    #[structopt(long, value_name = "OUTPUT_DIR")]
+    pub build_cache: Option<Option<PathBuf>>,
 }
 
 impl Config {
@@ -266,10 +273,10 @@ impl Config {
         let formatter = ImageFormatterBuilder::new()
             .line_pad(self.line_pad)
             .window_controls(!self.no_window_controls)
+            .window_title(self.window_title.clone())
             .line_number(!self.no_line_number)
             .font(self.font.clone().unwrap_or_default())
             .round_corner(!self.no_round_corner)
-            .window_controls(!self.no_window_controls)
             .shadow_adder(self.get_shadow_adder()?)
             .tab_width(self.tab_width)
             .highlight_lines(self.highlight_lines.clone().unwrap_or_default())
@@ -298,7 +305,7 @@ impl Config {
         if let (Ok(home_dir), true) = (std::env::var("HOME"), need_expand) {
             self.output
                 .as_ref()
-                .map(|p| p.to_string_lossy().replacen("~", &home_dir, 1).into())
+                .map(|p| p.to_string_lossy().replacen('~', &home_dir, 1).into())
         } else {
             self.output.clone()
         }
